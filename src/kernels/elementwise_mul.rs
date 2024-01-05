@@ -1,0 +1,256 @@
+use derive_macro::Kernel;
+use super::kernel::Kernel;
+use wgpu::*;
+
+use super::execution_step::ExecutionStep;
+
+/// Represents an element-wise multiplication of two vectors in GPU memory.
+#[derive(Kernel)]
+struct ElementwiseMultiplication {
+    step: ExecutionStep
+}
+
+impl ElementwiseMultiplication {
+    /// Creates a new kernel which is intended to perform `output = x .* y;`.
+    /// 
+    /// As this operation only works in 1D vectors, the `workgroup_size` parameter corresponds to a single dimension (i.e. x)
+    /// in the shader execution.
+    pub fn new(device: &Device, x: &Buffer, y: &Buffer, output: &Buffer, workgroup_size: u32) -> Self {
+        let work_size = x.size() as u32 / std::mem::size_of::<f32>() as u32;
+        let shader = device.create_shader_module(ShaderModuleDescriptor {
+            label: Some("Element-wise vector multiplication shader"),
+            source: ShaderSource::Wgsl(include_str!("../shaders/elementwise_mul.wgsl").into()),
+        });
+        let pipeline = device.create_compute_pipeline(&ComputePipelineDescriptor {
+            label: Some("Element-wise vector multiplication pipeline"),
+            layout: None,
+            module: &shader,
+            entry_point: "main",
+        });
+        let bind_group = device.create_bind_group(&BindGroupDescriptor {
+            label: Some("Bind group for element-wise vector multiplication"),
+            layout: &pipeline.get_bind_group_layout(0),
+            entries: &[
+                BindGroupEntry {
+                    binding: 0,
+                    resource: x.as_entire_binding(),
+                },
+                BindGroupEntry {
+                    binding: 1,
+                    resource: y.as_entire_binding(),
+                },
+                BindGroupEntry {
+                    binding: 2,
+                    resource: output.as_entire_binding(),
+                },
+            ],
+        });
+        // the amount of workgroups in each dimension
+        // this is generally passed as an argument to `dispatch_workgroups`
+        let workgroups = (work_size.div_ceil(workgroup_size), 1, 1);
+        Self {
+            step: ExecutionStep::new(bind_group, pipeline, workgroups)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use wgpu::util::DeviceExt;
+    const ERR_DID_NOT_FIND_ADAPTER: &str = "Failed to find an appropriate adapter";
+
+    async fn execute_gpu(
+        vec_a: &[f32],
+        vec_b: &[f32],
+    ) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
+        // Instantiates instance of WebGPU
+        let instance = wgpu::Instance::default();
+
+        // `request_adapter` instantiates the general connection to the GPU
+        let adapter = instance
+            .request_adapter(&wgpu::RequestAdapterOptions::default())
+            .await
+            .ok_or(ERR_DID_NOT_FIND_ADAPTER)?;
+
+        // `request_device` instantiates the feature specific connection to the GPU, defining some parameters,
+        //  `features` being the available features.
+        let (device, queue) = adapter
+            .request_device(
+                &wgpu::DeviceDescriptor {
+                    label: None,
+                    features: wgpu::Features::empty(),
+                    limits: wgpu::Limits::downlevel_defaults(),
+                },
+                None,
+            )
+            .await
+            .unwrap();
+
+        let info = adapter.get_info();
+        // skip this on LavaPipe temporarily
+        if info.vendor == 0x10005 {
+            return Err("LavaPipe not supported".into());
+        }
+
+        execute_gpu_inner(&device, &queue, vec_a, vec_b).await
+    }
+
+    async fn execute_gpu_inner(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        vec_a: &[f32],
+        vec_b: &[f32],
+    ) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
+        // Loads the shader from WGSL
+        let cs_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: None,
+            source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/elementwise_mul.wgsl").into())
+        });
+
+        // Gets the size in bytes of the buffer.
+        let slice_size = vec_a.len() * std::mem::size_of::<u32>();
+        let size = slice_size as wgpu::BufferAddress;
+
+        // Instantiates buffer without data.
+        // `usage` of buffer specifies how it can be used:
+        //   `BufferUsages::MAP_READ` allows it to be read (outside the shader).
+        //   `BufferUsages::COPY_DST` allows it to be the destination of the copy.
+        let staging_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        // Instantiates buffer with data (`vec_a`).
+        // Usage allowing the buffer to be:
+        //   A storage buffer (can be bound within a bind group and thus available to a shader).
+        //   The destination of a copy.
+        //   The source of a copy.
+        let storage_buffer_a = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Storage Buffer A"),
+            contents: bytemuck::cast_slice(vec_a),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+
+        let storage_buffer_b = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Storage Buffer B"),
+            contents: bytemuck::cast_slice(vec_b),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+
+        // Stores the result of the computation
+        let storage_buffer_c = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Storage Buffer C"),
+            size,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+
+        // A bind group defines how buffers are accessed by shaders.
+        // It is to WebGPU what a descriptor set is to Vulkan.
+        // `binding` here refers to the `binding` of a buffer in the shader (`layout(set = 0, binding = 0) buffer`).
+
+        // A pipeline specifies the operation of a shader
+
+        // Instantiates the pipeline.
+        let compute_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: None,
+            layout: None,
+            module: &cs_module,
+            entry_point: "main",
+        });
+
+        // Instantiates the bind group, once again specifying the binding of buffers.
+        let bind_group_layout = compute_pipeline.get_bind_group_layout(0);
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: storage_buffer_a.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: storage_buffer_b.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: storage_buffer_c.as_entire_binding(),
+                },
+            ],
+        });
+
+        // A command encoder executes one or many pipelines.
+        // It is to WebGPU what a command buffer is to Vulkan.
+        let mut encoder =
+            device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        {
+            let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: None,
+                timestamp_writes: None,
+            });
+            cpass.set_pipeline(&compute_pipeline);
+            cpass.set_bind_group(0, &bind_group, &[]);
+            cpass.insert_debug_marker("compute vector element-wise multiplication");
+            cpass.dispatch_workgroups(vec_a.len() as u32, 1, 1); // Number of cells to run, the (x,y,z) size of item being processed
+        }
+        // Sets adds copy operation to command encoder.
+        // Will copy data from storage buffer on GPU to staging buffer on CPU.
+        encoder.copy_buffer_to_buffer(&storage_buffer_c, 0, &staging_buffer, 0, size);
+
+        // Submits command encoder for processing
+        queue.submit(Some(encoder.finish()));
+
+        // Note that we're not calling `.await` here.
+        let buffer_slice = staging_buffer.slice(..);
+        // Sets the buffer up for mapping, sending over the result of the mapping back to us when it is finished.
+        let (sender, receiver) = futures_intrusive::channel::shared::oneshot_channel();
+        buffer_slice.map_async(wgpu::MapMode::Read, move |v| sender.send(v).unwrap());
+
+        // Poll the device in a blocking manner so that our future resolves.
+        // In an actual application, `device.poll(...)` should
+        // be called in an event loop or on another thread.
+        device.poll(wgpu::Maintain::Wait);
+
+        // Awaits until `buffer_future` can be read from
+        if let Some(Ok(())) = receiver.receive().await {
+            // Gets contents of buffer
+            let data = buffer_slice.get_mapped_range();
+            // Since contents are got in bytes, this converts these bytes back to u32
+            let result = bytemuck::cast_slice(&data).to_vec();
+
+            // With the current interface, we have to make sure all mapped views are
+            // dropped before we unmap the buffer.
+            drop(data);
+            staging_buffer.unmap(); // Unmaps buffer from memory
+                                    // If you are familiar with C++ these 2 lines can be thought of similarly to:
+                                    //   delete myPointer;
+                                    //   myPointer = NULL;
+                                    // It effectively frees the memory
+
+            // Returns data from buffer
+            Ok(result)
+        } else {
+            Err("failed to run dot product compute on gpu!".into())
+        }
+    }
+
+    #[test]
+    fn elementwise_multiplication() {
+        let vec_a = vec![2.0; 128 * 128];
+        let vec_b = vec![3.0; 128 * 128];
+        let result = pollster::block_on(async { execute_gpu(&vec_a, &vec_b).await });
+        match result {
+            Ok(result) => assert!(result == vec![6.0; 128 * 128]),
+            Err(e) => {
+                if e.to_string() == ERR_DID_NOT_FIND_ADAPTER {
+                    println!("Skipping test, no adapter found");
+                } else {
+                    panic!("{:?}", e)
+                }
+            }
+        }
+    }
+}
