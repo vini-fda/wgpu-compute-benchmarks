@@ -17,10 +17,9 @@ impl SumReduce {
         x: &Buffer,
         tmp: &Buffer,
         output: &Buffer, // a single element buffer
-        workgroup_size: u32,
     ) -> Self {
         let (block_sum_reduce, prev_stage_workgroups) =
-            Self::first_stage(device, x, tmp, workgroup_size);
+            Self::first_stage(device, x, tmp);
         let sum_reduce_final = Self::second_stage(device, tmp, output, prev_stage_workgroups);
         Self {
             block_sum_reduce,
@@ -32,9 +31,9 @@ impl SumReduce {
         device: &Device,
         x: &Buffer,
         tmp: &Buffer,
-        workgroup_size: u32,
     ) -> (ExecutionStep, u32) {
-        let work_size = x.size() as u32 / std::mem::size_of::<f32>() as u32;
+        let n = x.size() as u32 / std::mem::size_of::<f32>() as u32;
+        let (workgroup_size, workgroups) = Self::workgroup_info(device, n);
         let shader_source = include_str!("../shaders/block_sum_reduce.wgsl");
         let new_expr = format!("const WORKGROUP_SIZE = {}u;", workgroup_size);
         let shader_source = shader_source.replace("const WORKGROUP_SIZE = 256u;", &new_expr);
@@ -64,7 +63,7 @@ impl SumReduce {
         });
         // the amount of workgroups in each dimension
         // this is generally passed as an argument to `dispatch_workgroups`
-        let workgroups = (work_size.div_ceil(2 * workgroup_size), 1, 1);
+        let workgroups = (workgroups, 1, 1);
         (
             ExecutionStep::new(bind_group, pipeline, workgroups),
             workgroups.0,
@@ -109,6 +108,23 @@ impl SumReduce {
         let workgroups = (1, 1, 1);
         ExecutionStep::new(bind_group, pipeline, workgroups)
     }
+
+    pub fn workgroup_info(device: &Device, n: u32) -> (u32, u32) {
+        use crate::math_utils::{log2_ceil, next_closest_power_of_two};
+        let workgroup_size = device.limits().max_compute_workgroup_size_x;
+        let work_per_thread = 8 * next_closest_power_of_two(log2_ceil(n));
+        let workgroups = n.div_ceil(work_per_thread * workgroup_size);
+        // debug info
+        #[cfg(debug_assertions)]
+        {
+            println!("n: {}", n);
+            println!("workgroup_size: {}", workgroup_size);
+            println!("work_per_thread: {}", work_per_thread);
+            println!("workgroups: {}", workgroups);
+        }
+
+        (workgroup_size, workgroups)
+    }
 }
 
 #[cfg(test)]
@@ -130,6 +146,7 @@ mod tests {
             .request_adapter(&wgpu::RequestAdapterOptions::default())
             .await
             .expect(ERR_DID_NOT_FIND_ADAPTER);
+        let best_limits = adapter.limits();
 
         // `request_device` instantiates the feature specific connection to the GPU, defining some parameters,
         //  `features` being the available features.
@@ -138,7 +155,7 @@ mod tests {
                 &wgpu::DeviceDescriptor {
                     label: None,
                     features: wgpu::Features::empty(),
-                    limits: wgpu::Limits::downlevel_defaults(),
+                    limits: best_limits,
                 },
                 None,
             )
@@ -189,7 +206,7 @@ mod tests {
             mapped_at_creation: false,
         });
 
-        let sum_reduce = SumReduce::new(device, &x_buffer, &tmp_buffer, &output_buffer, 256);
+        let sum_reduce = SumReduce::new(device, &x_buffer, &tmp_buffer, &output_buffer);
         let mut encoder =
         device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
 
@@ -217,8 +234,8 @@ mod tests {
 
     #[test]
     fn test_sum_reduce() {
-        let x: Vec<f32> = vec![2.0; 1 << 24];
+        let x: Vec<f32> = vec![2.0; 1 << 28];
         let result = pollster::block_on(execute_gpu(&x));
-        assert_eq!(result, 2.0 * (1 << 24) as f32);
+        assert_eq!(result, 2.0 * (1 << 28) as f32);
     }
 }
