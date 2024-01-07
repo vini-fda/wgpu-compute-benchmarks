@@ -14,3 +14,4 @@ wgpu = "0.18.0"
 [dev-dependencies]
 futures-intrusive = "0.5.0"
 pollster = "0.3.0"
+rand = "0.8.5"

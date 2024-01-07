@@ -1,25 +1,34 @@
-use derive_macro::Kernel;
 use super::kernel::Kernel;
+use derive_macro::Kernel;
 use wgpu::*;
 
 use super::execution_step::ExecutionStep;
 
 /// Represents an element-wise multiplication of two vectors in GPU memory.
 #[derive(Kernel)]
-struct ElementwiseMultiplication {
-    step: ExecutionStep
+pub struct ElementwiseMultiplication {
+    step: ExecutionStep,
 }
 
 impl ElementwiseMultiplication {
     /// Creates a new kernel which is intended to perform `output = x .* y;`.
-    /// 
+    ///
     /// As this operation only works in 1D vectors, the `workgroup_size` parameter corresponds to a single dimension (i.e. x)
     /// in the shader execution.
-    pub fn new(device: &Device, x: &Buffer, y: &Buffer, output: &Buffer, workgroup_size: u32) -> Self {
+    pub fn new(
+        device: &Device,
+        x: &Buffer,
+        y: &Buffer,
+        output: &Buffer,
+        workgroup_size: u32,
+    ) -> Self {
         let work_size = x.size() as u32 / std::mem::size_of::<f32>() as u32;
+        let shader_source = include_str!("../shaders/elementwise_mul.wgsl");
+        let new_expr = format!("const WORKGROUP_SIZE = {}u;", workgroup_size);
+        let shader_source = shader_source.replace("const WORKGROUP_SIZE = 256u;", &new_expr);
         let shader = device.create_shader_module(ShaderModuleDescriptor {
             label: Some("Element-wise vector multiplication shader"),
-            source: ShaderSource::Wgsl(include_str!("../shaders/elementwise_mul.wgsl").into()),
+            source: ShaderSource::Wgsl(shader_source.into()),
         });
         let pipeline = device.create_compute_pipeline(&ComputePipelineDescriptor {
             label: Some("Element-wise vector multiplication pipeline"),
@@ -49,20 +58,21 @@ impl ElementwiseMultiplication {
         // this is generally passed as an argument to `dispatch_workgroups`
         let workgroups = (work_size.div_ceil(workgroup_size), 1, 1);
         Self {
-            step: ExecutionStep::new(bind_group, pipeline, workgroups)
+            step: ExecutionStep::new(bind_group, pipeline, workgroups),
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use wgpu::util::DeviceExt;
+    use wgpu::{util::DeviceExt, Device, Queue};
+
+    use crate::kernels::kernel::Kernel;
+
+    use super::ElementwiseMultiplication;
     const ERR_DID_NOT_FIND_ADAPTER: &str = "Failed to find an appropriate adapter";
 
-    async fn execute_gpu(
-        vec_a: &[f32],
-        vec_b: &[f32],
-    ) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
+    async fn wgpu_init() -> (Device, Queue) {
         // Instantiates instance of WebGPU
         let instance = wgpu::Instance::default();
 
@@ -70,7 +80,7 @@ mod tests {
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions::default())
             .await
-            .ok_or(ERR_DID_NOT_FIND_ADAPTER)?;
+            .expect(ERR_DID_NOT_FIND_ADAPTER);
 
         // `request_device` instantiates the feature specific connection to the GPU, defining some parameters,
         //  `features` being the available features.
@@ -89,8 +99,14 @@ mod tests {
         let info = adapter.get_info();
         // skip this on LavaPipe temporarily
         if info.vendor == 0x10005 {
-            return Err("LavaPipe not supported".into());
+            panic!("LavaPipe not supported")
+        } else {
+            (device, queue)
         }
+    }
+
+    async fn execute_gpu(vec_a: &[f32], vec_b: &[f32]) -> Vec<f32> {
+        let (device, queue) = wgpu_init().await;
 
         execute_gpu_inner(&device, &queue, vec_a, vec_b).await
     }
@@ -100,13 +116,7 @@ mod tests {
         queue: &wgpu::Queue,
         vec_a: &[f32],
         vec_b: &[f32],
-    ) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
-        // Loads the shader from WGSL
-        let cs_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: None,
-            source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/elementwise_mul.wgsl").into())
-        });
-
+    ) -> Vec<f32> {
         // Gets the size in bytes of the buffer.
         let slice_size = vec_a.len() * std::mem::size_of::<u32>();
         let size = slice_size as wgpu::BufferAddress;
@@ -147,56 +157,28 @@ mod tests {
             mapped_at_creation: false,
         });
 
-        // A bind group defines how buffers are accessed by shaders.
-        // It is to WebGPU what a descriptor set is to Vulkan.
-        // `binding` here refers to the `binding` of a buffer in the shader (`layout(set = 0, binding = 0) buffer`).
-
-        // A pipeline specifies the operation of a shader
-
-        // Instantiates the pipeline.
-        let compute_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: None,
-            layout: None,
-            module: &cs_module,
-            entry_point: "main",
-        });
-
-        // Instantiates the bind group, once again specifying the binding of buffers.
-        let bind_group_layout = compute_pipeline.get_bind_group_layout(0);
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: None,
-            layout: &bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: storage_buffer_a.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: storage_buffer_b.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: storage_buffer_c.as_entire_binding(),
-                },
-            ],
-        });
+        const WORKGROUP_SIZE: u32 = 256;
+        let vecmul = ElementwiseMultiplication::new(
+            device,
+            &storage_buffer_a,
+            &storage_buffer_b,
+            &storage_buffer_c,
+            WORKGROUP_SIZE,
+        );
 
         // A command encoder executes one or many pipelines.
         // It is to WebGPU what a command buffer is to Vulkan.
         let mut encoder =
             device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-        {
-            let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: None,
-                timestamp_writes: None,
-            });
-            cpass.set_pipeline(&compute_pipeline);
-            cpass.set_bind_group(0, &bind_group, &[]);
-            cpass.insert_debug_marker("compute vector element-wise multiplication");
-            cpass.dispatch_workgroups(vec_a.len() as u32, 1, 1); // Number of cells to run, the (x,y,z) size of item being processed
-        }
-        // Sets adds copy operation to command encoder.
+
+        let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: None,
+            timestamp_writes: None,
+        });
+        vecmul.add_to_pass(&mut cpass);
+        drop(cpass);
+
+        // Adds a copy operation to the command encoder.
         // Will copy data from storage buffer on GPU to staging buffer on CPU.
         encoder.copy_buffer_to_buffer(&storage_buffer_c, 0, &staging_buffer, 0, size);
 
@@ -231,26 +213,52 @@ mod tests {
                                     // It effectively frees the memory
 
             // Returns data from buffer
-            Ok(result)
+            result
         } else {
-            Err("failed to run dot product compute on gpu!".into())
+            panic!("failed to run dot product compute on gpu!")
         }
+    }
+
+    /// Asserts that the result is equal to the correct
+    /// element-wise multiplication of `vec_a` and `vec_b`
+    fn assert_correct_mul(vec_a: &[f32], vec_b: &[f32]) {
+        let vec_c = vec_a
+            .iter()
+            .zip(vec_b.iter())
+            .map(|(a, b)| a * b)
+            .collect::<Vec<f32>>();
+        let result = pollster::block_on(execute_gpu(vec_a, vec_b));
+        assert!(result == vec_c);
+    }
+
+    /// Asserts that the result is not equal to `vec_c`
+    fn assert_notequal(vec_a: &[f32], vec_b: &[f32], vec_c: &[f32]) {
+        let result = pollster::block_on(execute_gpu(vec_a, vec_b));
+        assert!(result.iter().zip(vec_c.iter()).any(|(a, b)| a != b));
     }
 
     #[test]
     fn elementwise_multiplication() {
-        let vec_a = vec![2.0; 128 * 128];
-        let vec_b = vec![3.0; 128 * 128];
-        let result = pollster::block_on(async { execute_gpu(&vec_a, &vec_b).await });
-        match result {
-            Ok(result) => assert!(result == vec![6.0; 128 * 128]),
-            Err(e) => {
-                if e.to_string() == ERR_DID_NOT_FIND_ADAPTER {
-                    println!("Skipping test, no adapter found");
-                } else {
-                    panic!("{:?}", e)
-                }
-            }
+        // test 1:
+        let mut vec_a = vec![2.0; 128 * 128];
+        let mut vec_b = vec![3.0; 128 * 128];
+        assert_correct_mul(&vec_a, &vec_b);
+        // test 2: now with random numbers
+        use rand::Rng;
+        let mut rng = rand::thread_rng();
+        for i in 0..128 * 128 {
+            vec_a[i] = rng.gen::<f32>();
+            vec_b[i] = rng.gen::<f32>();
         }
+        assert_correct_mul(&vec_a, &vec_b);
+        // test 3: now with random numbers and a different size that is not a power of 2
+        let vec_a = (0..77).map(|_| rng.gen::<f32>()).collect::<Vec<f32>>();
+        let vec_b = (0..77).map(|_| rng.gen::<f32>()).collect::<Vec<f32>>();
+        assert_correct_mul(&vec_a, &vec_b);
+        //test 4: assert that the result is not equal to another unrelated vector
+        let vec_a = vec![1.0; 128 * 128];
+        let vec_b = vec![0.0; 128 * 128];
+        let vec_c = vec![-1.0; 128 * 128];
+        assert_notequal(&vec_a, &vec_b, &vec_c);
     }
 }
