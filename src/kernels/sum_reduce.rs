@@ -139,11 +139,11 @@ mod tests {
 
     async fn wgpu_init() -> (Device, Queue) {
         // Instantiates instance of WebGPU
-        let instance = wgpu::Instance::default();
+        let instance = Instance::default();
 
         // `request_adapter` instantiates the general connection to the GPU
         let adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions::default())
+            .request_adapter(&RequestAdapterOptions::default())
             .await
             .expect(ERR_DID_NOT_FIND_ADAPTER);
         let best_limits = adapter.limits();
@@ -152,9 +152,9 @@ mod tests {
         //  `features` being the available features.
         let (device, queue) = adapter
             .request_device(
-                &wgpu::DeviceDescriptor {
+                &DeviceDescriptor {
                     label: None,
-                    features: wgpu::Features::empty(),
+                    features: Features::empty(),
                     limits: best_limits,
                 },
                 None,
@@ -172,52 +172,56 @@ mod tests {
     }
 
     async fn execute_gpu(x: &[f32]) -> f32 {
+        // Initialization
         let (device, queue) = wgpu_init().await;
 
-        execute_gpu_inner(&device, &queue, x).await
+        let staging_buffer = device.create_buffer(&BufferDescriptor {
+            label: Some("Buffer for reading results"),
+            size: std::mem::size_of::<f32>() as BufferAddress,
+            usage: BufferUsages::MAP_READ | BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let x_buffer = device.create_buffer_init(&util::BufferInitDescriptor {
+            label: Some("Input buffer"),
+            contents: bytemuck::cast_slice(x),
+            usage: BufferUsages::STORAGE,
+        });
+        let tmp_buffer = device.create_buffer(&BufferDescriptor {
+            label: Some("Temporary buffer"),
+            size: x.len() as u64 * std::mem::size_of::<f32>() as u64,
+            usage: BufferUsages::STORAGE,
+            mapped_at_creation: false,
+        });
+        let output_buffer = device.create_buffer(&BufferDescriptor {
+            label: Some("Output buffer"),
+            size: std::mem::size_of::<f32>() as u64,
+            usage: BufferUsages::STORAGE | BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+
+        execute_gpu_inner(&device, &queue, &staging_buffer, &x_buffer, &tmp_buffer, &output_buffer).await
     }
 
     async fn execute_gpu_inner(
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        x: &[f32],
+        device: &Device,
+        queue: &Queue,
+        staging_buffer: &Buffer,
+        x_buffer: &Buffer,
+        tmp_buffer: &Buffer,
+        output_buffer: &Buffer,
     ) -> f32 {
-        let staging_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Buffer for reading results"),
-            size: std::mem::size_of::<f32>() as BufferAddress,
-            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let x_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Input buffer"),
-            contents: bytemuck::cast_slice(x),
-            usage: wgpu::BufferUsages::STORAGE,
-        });
-        let tmp_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Temporary buffer"),
-            size: x.len() as u64 * std::mem::size_of::<f32>() as u64,
-            usage: wgpu::BufferUsages::STORAGE,
-            mapped_at_creation: false,
-        });
-        let output_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Output buffer"),
-            size: std::mem::size_of::<f32>() as u64,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
-        });
-
-        let sum_reduce = SumReduce::new(device, &x_buffer, &tmp_buffer, &output_buffer);
+        let sum_reduce = SumReduce::new(device, x_buffer, tmp_buffer, output_buffer);
         let mut encoder =
-        device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        device.create_command_encoder(&CommandEncoderDescriptor { label: None });
 
-        let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+        let mut cpass = encoder.begin_compute_pass(&ComputePassDescriptor {
             label: None,
             timestamp_writes: None,
         });
         sum_reduce.add_to_pass(&mut cpass);
         drop(cpass);
 
-        encoder.copy_buffer_to_buffer(&output_buffer, 0, &staging_buffer, 0, std::mem::size_of::<f32>() as BufferAddress);
+        encoder.copy_buffer_to_buffer(output_buffer, 0, staging_buffer, 0, std::mem::size_of::<f32>() as BufferAddress);
         
         queue.submit(Some(encoder.finish()));
         let (sender, receiver) = futures_intrusive::channel::shared::oneshot_channel();
