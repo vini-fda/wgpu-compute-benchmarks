@@ -81,8 +81,8 @@ fn benchmark_gpu_1(c: &mut Criterion) {
             usage: BufferUsages::STORAGE | BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
-    
-        let sum_reduce = SumReduce::new(&device, &x_buffer, &tmp_buffer, &output_buffer);
+        let shader_source = include_str!("../src/shaders/block_sum_reduce.wgsl");
+        let sum_reduce = SumReduce::new(&device, &x_buffer, &tmp_buffer, &output_buffer, shader_source);
     
         let f = || {
             // polls the function until it is ready
@@ -188,7 +188,8 @@ async fn execute_gpu_inner_2(
     tmp_buffer: &Buffer,
     output_buffer: &Buffer,
 ) -> f32 {
-    let sum_reduce = SumReduce::new(device, x_buffer, tmp_buffer, output_buffer);
+    let shader_source = include_str!("../src/shaders/block_sum_reduce.wgsl");
+    let sum_reduce = SumReduce::new(device, x_buffer, tmp_buffer, output_buffer, shader_source);
     let mut encoder =
     device.create_command_encoder(&CommandEncoderDescriptor { label: None });
 
