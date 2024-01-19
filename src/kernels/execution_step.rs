@@ -1,6 +1,6 @@
 use wgpu::{BindGroup, ComputePipeline, ComputePass};
 
-use super::kernel::Kernel;
+use super::gpu_executor::GPUExecutor;
 
 pub struct ExecutionStep {
     bind_group: BindGroup,
@@ -22,7 +22,7 @@ impl ExecutionStep {
     }
 }
 
-impl Kernel for ExecutionStep {
+impl GPUExecutor for ExecutionStep {
     fn add_to_pass<'a>(&'a self, pass: &mut ComputePass<'a>) {
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &self.bind_group, &[]);

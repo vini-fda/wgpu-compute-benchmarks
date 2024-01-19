@@ -23,7 +23,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>, @builtin(local_invo
 
     workgroupBarrier();
 
-    for (var s = 1; s < WORKGROUP_SIZE; s <<= 1u) {
+    for (var s = 1u; s < WORKGROUP_SIZE; s <<= 1u) {
         let index = 2u * s * tid;
         if index < WORKGROUP_SIZE {
             sdata[index] += sdata[index + s];

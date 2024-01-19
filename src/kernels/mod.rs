@@ -1,5 +1,12 @@
 pub mod execution_step;
-pub mod dot;
 pub mod elementwise_mul;
-pub mod kernel;
+pub mod gpu_executor;
 pub mod sum_reduce;
+pub mod kernel1d;
+pub mod block_sum_reduce_1;
+pub mod block_sum_reduce_2;
+pub mod block_sum_reduce_3;
+pub mod block_sum_reduce_4;
+pub mod block_sum_reduce_5;
+pub mod block_sum_reduce_6;
+pub mod block_sum_reduce_7;

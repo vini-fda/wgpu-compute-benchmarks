@@ -1,25 +1,25 @@
-use super::kernel::Kernel;
-use derive_macro::Kernel;
+use super::{gpu_executor::GPUExecutor, kernel1d::Kernel1D};
+use derive_macro::GPUExecutor;
 use wgpu::*;
 
 use super::execution_step::ExecutionStep;
 
 /// Represents a parallel sum-reduction operation on GPU buffers.
-#[derive(Kernel)]
+#[derive(GPUExecutor)]
 pub struct SumReduce {
     block_sum_reduce: ExecutionStep,
     sum_reduce_final: ExecutionStep,
 }
 
 impl SumReduce {
-    pub fn new(
+    pub fn from_kernel<K: Kernel1D>(
         device: &Device,
         x: &Buffer,
         tmp: &Buffer,
         output: &Buffer, // a single element buffer
-        shader_source: &str,
+        kernel: &K,
     ) -> Self {
-        let (block_sum_reduce, prev_stage_workgroups) = Self::first_stage(device, x, tmp, shader_source);
+        let (block_sum_reduce, prev_stage_workgroups) = Self::first_stage(device, x, tmp, kernel);
         let sum_reduce_final = Self::second_stage(device, tmp, output, prev_stage_workgroups);
         Self {
             block_sum_reduce,
@@ -27,10 +27,9 @@ impl SumReduce {
         }
     }
 
-    fn first_stage(device: &Device, x: &Buffer, tmp: &Buffer, shader_source: &str) -> (ExecutionStep, u32) {
+    fn first_stage<K: Kernel1D>(device: &Device, x: &Buffer, tmp: &Buffer, kernel: &K) -> (ExecutionStep, u32) {
         let n = x.size() as u32 / std::mem::size_of::<f32>() as u32;
-        let (workgroup_size, workgroups) = Self::workgroup_info(device, n);
-        let shader = Self::load_shader_1(device, workgroup_size, shader_source);
+        let shader = kernel.shader_module(device);
         let pipeline = device.create_compute_pipeline(&ComputePipelineDescriptor {
             label: Some("Parallel sum-reduction pipeline (pass 1)"),
             layout: None,
@@ -51,23 +50,11 @@ impl SumReduce {
                 },
             ],
         });
-        // the amount of workgroups in each dimension
-        // this is generally passed as an argument to `dispatch_workgroups`
-        let workgroups = (workgroups, 1, 1);
+        let workgroups = kernel.work_group_info(n).workgroups;
         (
             ExecutionStep::new(bind_group, pipeline, workgroups),
             workgroups.0,
         )
-    }
-
-    fn load_shader_1(device: &Device, workgroup_size: u32, shader_source: &str) -> ShaderModule {
-        let new_expr = format!("const WORKGROUP_SIZE = {}u;", workgroup_size);
-        let shader_source = shader_source.replace("const WORKGROUP_SIZE = 256u;", &new_expr);
-        let shader = device.create_shader_module(ShaderModuleDescriptor {
-            label: Some("Parallel sum-reduction shader (pass 1)"),
-            source: ShaderSource::Wgsl(shader_source.into()),
-        });
-        shader
     }
 
     fn second_stage(
@@ -137,11 +124,19 @@ mod tests {
     use wgpu::util::DeviceExt;
     use wgpu::*;
 
-    use crate::kernels::kernel::Kernel;
-    use crate::shader_utils;
+    use crate::kernels::block_sum_reduce_1::BlockSumReduce1;
+    use crate::kernels::block_sum_reduce_2::BlockSumReduce2;
+    use crate::kernels::block_sum_reduce_3::BlockSumReduce3;
+    use crate::kernels::block_sum_reduce_4::BlockSumReduce4;
+    use crate::kernels::block_sum_reduce_5::BlockSumReduce5;
+    use crate::kernels::block_sum_reduce_6::BlockSumReduce6;
+    use crate::kernels::block_sum_reduce_7::BlockSumReduce7;
+    use crate::kernels::gpu_executor::GPUExecutor;
+    use crate::kernels::kernel1d::Kernel1D;
 
     use super::SumReduce;
     const ERR_DID_NOT_FIND_ADAPTER: &str = "Failed to find an appropriate adapter";
+    use crate::shader_utils::DEVICE_LIMITS;
 
     async fn wgpu_init() -> (Device, Queue) {
         // Instantiates instance of WebGPU
@@ -168,6 +163,11 @@ mod tests {
             .await
             .unwrap();
 
+        // set device limits
+        let limits = device.limits();
+        let _ = DEVICE_LIMITS.set(limits);
+
+
         let info = adapter.get_info();
         // skip this on LavaPipe temporarily
         if info.vendor == 0x10005 {
@@ -177,9 +177,9 @@ mod tests {
         }
     }
 
-    async fn execute_gpu(x: &[f32], first_stage: &str) -> f32 {
+    async fn execute_gpu<K: Kernel1D>(device: Device, queue: Queue, x: &[f32], kernel: &K) -> f32 {
         // Initialization
-        let (device, queue) = wgpu_init().await;
+        // let (device, queue) = wgpu_init().await;
 
         let staging_buffer = device.create_buffer(&BufferDescriptor {
             label: Some("Buffer for reading results"),
@@ -212,21 +212,21 @@ mod tests {
             &x_buffer,
             &tmp_buffer,
             &output_buffer,
-            first_stage,
+            kernel,
         )
         .await
     }
 
-    async fn execute_gpu_inner(
+    async fn execute_gpu_inner<K: Kernel1D>(
         device: &Device,
         queue: &Queue,
         staging_buffer: &Buffer,
         x_buffer: &Buffer,
         tmp_buffer: &Buffer,
         output_buffer: &Buffer,
-        first_stage: &str,
+        kernel: &K,
     ) -> f32 {
-        let sum_reduce = SumReduce::new(device, x_buffer, tmp_buffer, output_buffer, first_stage);
+        let sum_reduce = SumReduce::from_kernel(device, x_buffer, tmp_buffer, output_buffer, kernel);
         let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor { label: None });
 
         let mut cpass = encoder.begin_compute_pass(&ComputePassDescriptor {
@@ -264,55 +264,51 @@ mod tests {
         }
     }
 
-    fn test_sum_reduce(shader_source: &str) {
+    fn test_sum_reduce<K: Kernel1D>(device: Device, queue: Queue, kernel: &K) {
         let x: Vec<f32> = vec![2.0; 1 << 20];
-        let result = pollster::block_on(execute_gpu(&x, shader_source));
+        let result = pollster::block_on(execute_gpu(device, queue, &x, kernel));
         assert_eq!(result, 2.0 * (1 << 20) as f32);
     }
 
     #[test]
     fn test_sum_reduce_1() {
-        test_sum_reduce(include_str!("../shaders/block_sum_reduce_1.wgsl"));
+        let (device, queue) = pollster::block_on(wgpu_init());
+        test_sum_reduce(device, queue, &BlockSumReduce1::new());
     }
 
     #[test]
     fn test_sum_reduce_2() {
-        test_sum_reduce(include_str!("../shaders/block_sum_reduce_2.wgsl"));
+        let (device, queue) = pollster::block_on(wgpu_init());
+        test_sum_reduce(device, queue, &BlockSumReduce2::new());
     }
 
     #[test]
     fn test_sum_reduce_3() {
-        test_sum_reduce(include_str!("../shaders/block_sum_reduce_3.wgsl"));
+        let (device, queue) = pollster::block_on(wgpu_init());
+        test_sum_reduce(device, queue, &BlockSumReduce3::new());
     }
 
     #[test]
     fn test_sum_reduce_4() {
-        test_sum_reduce(include_str!("../shaders/block_sum_reduce_4.wgsl"));
+        let (device, queue) = pollster::block_on(wgpu_init());
+        test_sum_reduce(device, queue, &BlockSumReduce4::new());
     }
 
     #[test]
     fn test_sum_reduce_5() {
-        test_sum_reduce(include_str!("../shaders/block_sum_reduce_5.wgsl"));
+        let (device, queue) = pollster::block_on(wgpu_init());
+        test_sum_reduce(device, queue, &BlockSumReduce5::new());
     }
 
     #[test]
     fn test_sum_reduce_6() {
-        let main_loop = shader_utils::gen_wgsl_main_unrolled_loop(1024, 32);
-        let last_warp = shader_utils::gen_wgsl_last_warp(1024, 32);
-        let shader6 = include_str!("../shaders/block_sum_reduce_6_template.wgsl");
-        let shader6 = shader6.replace("//#main_loop", &main_loop);
-        let shader6 = shader6.replace("//#last_warp", &last_warp);
-        println!("{}", shader6);
-        test_sum_reduce(&shader6);
+        let (device, queue) = pollster::block_on(wgpu_init());
+        test_sum_reduce(device, queue, &BlockSumReduce6::new());
     }
 
     #[test]
     fn test_sum_reduce_7() {
-        let main_loop = shader_utils::gen_wgsl_main_unrolled_loop(1024, 32);
-        let last_warp = shader_utils::gen_wgsl_last_warp(1024, 32);
-        let shader7 = include_str!("../shaders/block_sum_reduce_7_template.wgsl");
-        let shader7 = shader7.replace("//#main_loop", &main_loop);
-        let shader7 = shader7.replace("//#last_warp", &last_warp);
-        test_sum_reduce(&shader7);
+        let (device, queue) = pollster::block_on(wgpu_init());
+        test_sum_reduce(device, queue, &BlockSumReduce7::new());
     }
 }

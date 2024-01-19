@@ -3,7 +3,8 @@ use std::borrow::Borrow;
 use criterion::{black_box, criterion_group, criterion_main, Criterion, BenchmarkId, PlotConfiguration, AxisScale};
 use wgpu::*;
 use wgpu::util::DeviceExt;
-use wgpu_compute_benchmarks::kernels::kernel::Kernel;
+use wgpu_compute_benchmarks::kernels::block_sum_reduce_1::BlockSumReduce1;
+use wgpu_compute_benchmarks::kernels::gpu_executor::GPUExecutor;
 use wgpu_compute_benchmarks::kernels::sum_reduce::SumReduce;
 use burn::tensor::Tensor;
 use burn::backend::Wgpu;
@@ -81,8 +82,8 @@ fn benchmark_gpu_1(c: &mut Criterion) {
             usage: BufferUsages::STORAGE | BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
-        let shader_source = include_str!("../src/shaders/block_sum_reduce.wgsl");
-        let sum_reduce = SumReduce::new(&device, &x_buffer, &tmp_buffer, &output_buffer, shader_source);
+        let kernel = BlockSumReduce1::new();
+        let sum_reduce = SumReduce::from_kernel(&device, &x_buffer, &tmp_buffer, &output_buffer, &kernel);
     
         let f = || {
             // polls the function until it is ready
@@ -188,8 +189,8 @@ async fn execute_gpu_inner_2(
     tmp_buffer: &Buffer,
     output_buffer: &Buffer,
 ) -> f32 {
-    let shader_source = include_str!("../src/shaders/block_sum_reduce.wgsl");
-    let sum_reduce = SumReduce::new(device, x_buffer, tmp_buffer, output_buffer, shader_source);
+    let kernel = BlockSumReduce1::new();
+    let sum_reduce = SumReduce::from_kernel(device, x_buffer, tmp_buffer, output_buffer, &kernel);
     let mut encoder =
     device.create_command_encoder(&CommandEncoderDescriptor { label: None });
 

@@ -1,3 +1,5 @@
+use std::{sync::OnceLock, iter::Once};
+
 /// Function to generate wgsl code like such, but with compile time eval of the constants:
 /// ```wgsl
 /// if WORKGROUP_SIZE >= 1024u {
@@ -74,3 +76,5 @@ pub fn gen_wgsl_last_warp(workgroup_size: u32, warp_size: u32) -> String {
     code.push_str("}\n");
     code
 }
+
+pub static DEVICE_LIMITS: OnceLock<wgpu::Limits> = OnceLock::new();

@@ -1,3 +1,3 @@
-pub trait Kernel {
+pub trait GPUExecutor {
     fn add_to_pass<'a>(&'a self, pass: &mut wgpu::ComputePass<'a>);
 }
