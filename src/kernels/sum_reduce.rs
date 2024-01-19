@@ -27,7 +27,12 @@ impl SumReduce {
         }
     }
 
-    fn first_stage<K: Kernel1D>(device: &Device, x: &Buffer, tmp: &Buffer, kernel: &K) -> (ExecutionStep, u32) {
+    fn first_stage<K: Kernel1D>(
+        device: &Device,
+        x: &Buffer,
+        tmp: &Buffer,
+        kernel: &K,
+    ) -> (ExecutionStep, u32) {
         let n = x.size() as u32 / std::mem::size_of::<f32>() as u32;
         let shader = kernel.shader_module(device);
         let pipeline = device.create_compute_pipeline(&ComputePipelineDescriptor {
@@ -150,7 +155,6 @@ mod tests {
         let limits = device.limits();
         let _ = DEVICE_LIMITS.set(limits);
 
-
         let info = adapter.get_info();
         // skip this on LavaPipe temporarily
         if info.vendor == 0x10005 {
@@ -206,7 +210,8 @@ mod tests {
         output_buffer: &Buffer,
         kernel: &K,
     ) -> f32 {
-        let sum_reduce = SumReduce::from_kernel(device, x_buffer, tmp_buffer, output_buffer, kernel);
+        let sum_reduce =
+            SumReduce::from_kernel(device, x_buffer, tmp_buffer, output_buffer, kernel);
         let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor { label: None });
 
         let mut cpass = encoder.begin_compute_pass(&ComputePassDescriptor {

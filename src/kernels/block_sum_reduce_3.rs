@@ -15,7 +15,7 @@ impl BlockSumReduce3 {
         shader_source = shader_source.replace("const WORKGROUP_SIZE = 256u;", &replace);
         Self {
             shader_source,
-            workgroup_size
+            workgroup_size,
         }
     }
 }

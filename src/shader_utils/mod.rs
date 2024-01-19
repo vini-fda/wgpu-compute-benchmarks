@@ -1,4 +1,4 @@
-use std::{sync::OnceLock, iter::Once};
+use std::{iter::Once, sync::OnceLock};
 
 /// Function to generate wgsl code like such, but with compile time eval of the constants:
 /// ```wgsl

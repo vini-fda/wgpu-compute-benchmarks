@@ -1,4 +1,4 @@
-use crate::shader_utils::{DEVICE_LIMITS, gen_wgsl_main_unrolled_loop, gen_wgsl_last_warp};
+use crate::shader_utils::{gen_wgsl_last_warp, gen_wgsl_main_unrolled_loop, DEVICE_LIMITS};
 
 use super::kernel1d::{Kernel1D, KernelExecutionInfo};
 

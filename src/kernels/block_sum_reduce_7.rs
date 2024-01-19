@@ -1,4 +1,7 @@
-use crate::{shader_utils::{DEVICE_LIMITS, gen_wgsl_main_unrolled_loop, gen_wgsl_last_warp}, math_utils::{log2_ceil, next_closest_power_of_two}};
+use crate::{
+    math_utils::{log2_ceil, next_closest_power_of_two},
+    shader_utils::{gen_wgsl_last_warp, gen_wgsl_main_unrolled_loop, DEVICE_LIMITS},
+};
 
 use super::kernel1d::{Kernel1D, KernelExecutionInfo};
 

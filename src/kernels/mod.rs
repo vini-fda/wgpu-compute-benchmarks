@@ -1,8 +1,3 @@
-pub mod execution_step;
-pub mod elementwise_mul;
-pub mod gpu_executor;
-pub mod sum_reduce;
-pub mod kernel1d;
 pub mod block_sum_reduce_1;
 pub mod block_sum_reduce_2;
 pub mod block_sum_reduce_3;
@@ -10,3 +5,8 @@ pub mod block_sum_reduce_4;
 pub mod block_sum_reduce_5;
 pub mod block_sum_reduce_6;
 pub mod block_sum_reduce_7;
+pub mod elementwise_mul;
+pub mod execution_step;
+pub mod gpu_executor;
+pub mod kernel1d;
+pub mod sum_reduce;

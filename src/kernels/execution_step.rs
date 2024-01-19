@@ -1,4 +1,4 @@
-use wgpu::{BindGroup, ComputePipeline, ComputePass};
+use wgpu::{BindGroup, ComputePass, ComputePipeline};
 
 use super::gpu_executor::GPUExecutor;
 

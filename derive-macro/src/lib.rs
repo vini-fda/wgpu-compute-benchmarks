@@ -2,7 +2,7 @@ extern crate proc_macro;
 
 use proc_macro::TokenStream;
 use quote::{quote, ToTokens};
-use syn::{parse_macro_input, DeriveInput, Data, Fields};
+use syn::{parse_macro_input, Data, DeriveInput, Fields};
 
 #[proc_macro_derive(GPUExecutor)]
 pub fn GPUExecutor(input: TokenStream) -> TokenStream {
