@@ -100,23 +100,6 @@ impl SumReduce {
         });
         shader
     }
-
-    pub fn workgroup_info(device: &Device, n: u32) -> (u32, u32) {
-        use crate::math_utils::{log2_ceil, next_closest_power_of_two};
-        let workgroup_size = device.limits().max_compute_workgroup_size_x;
-        let work_per_thread = 8 * next_closest_power_of_two(log2_ceil(n));
-        let workgroups = n.div_ceil(work_per_thread * workgroup_size);
-        // debug info
-        #[cfg(debug_assertions)]
-        {
-            println!("n: {}", n);
-            println!("workgroup_size: {}", workgroup_size);
-            println!("work_per_thread: {}", work_per_thread);
-            println!("workgroups: {}", workgroups);
-        }
-
-        (workgroup_size, workgroups)
-    }
 }
 
 #[cfg(test)]
@@ -178,9 +161,6 @@ mod tests {
     }
 
     async fn execute_gpu<K: Kernel1D>(device: Device, queue: Queue, x: &[f32], kernel: &K) -> f32 {
-        // Initialization
-        // let (device, queue) = wgpu_init().await;
-
         let staging_buffer = device.create_buffer(&BufferDescriptor {
             label: Some("Buffer for reading results"),
             size: std::mem::size_of::<f32>() as BufferAddress,
