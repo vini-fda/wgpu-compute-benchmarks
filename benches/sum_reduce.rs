@@ -1,6 +1,7 @@
 
 
 use burn::backend::Wgpu;
+use burn::backend::wgpu::kernel;
 use burn::tensor::Tensor;
 use criterion::{
     criterion_group, criterion_main, AxisScale, BenchmarkId, Criterion,
@@ -9,8 +10,17 @@ use criterion::{
 use wgpu::util::DeviceExt;
 use wgpu::*;
 use wgpu_compute_benchmarks::kernels::block_sum_reduce_1::BlockSumReduce1;
+use wgpu_compute_benchmarks::kernels::block_sum_reduce_2::BlockSumReduce2;
+use wgpu_compute_benchmarks::kernels::block_sum_reduce_3::BlockSumReduce3;
+use wgpu_compute_benchmarks::kernels::block_sum_reduce_4::BlockSumReduce4;
+use wgpu_compute_benchmarks::kernels::block_sum_reduce_5::BlockSumReduce5;
+use wgpu_compute_benchmarks::kernels::block_sum_reduce_6::BlockSumReduce6;
+use wgpu_compute_benchmarks::kernels::block_sum_reduce_7::BlockSumReduce7;
 use wgpu_compute_benchmarks::kernels::gpu_executor::GPUExecutor;
+use wgpu_compute_benchmarks::kernels::kernel1d::Kernel1D;
 use wgpu_compute_benchmarks::kernels::sum_reduce::SumReduce;
+
+use wgpu_compute_benchmarks::shader_utils::DEVICE_LIMITS;
 
 // Type alias for the backend to use.
 type Backend = Wgpu;
@@ -41,6 +51,10 @@ async fn wgpu_init() -> (Device, Queue) {
         )
         .await
         .unwrap();
+
+    // set device limits
+    let limits = device.limits();
+    let _ = DEVICE_LIMITS.set(limits);
 
     let info = adapter.get_info();
     // skip this on LavaPipe temporarily
@@ -125,12 +139,16 @@ fn execute_gpu_inner_1<const N: usize>(device: &Device, queue: &Queue, sum_reduc
     }
 }
 
+
+
 fn benchmark_gpu_2(c: &mut Criterion) {
     // Initialization
     let (device, queue) = pollster::block_on(wgpu_init());
     let mut group = c.benchmark_group("SumReduce [executed once]");
     let plot_config = PlotConfiguration::default().summary_scale(AxisScale::Logarithmic);
     group.plot_config(plot_config);
+    group.sampling_mode(criterion::SamplingMode::Flat);
+    group.sample_size(50);
 
     for p in 20..=28 {
         let xlen = 1 << p;
@@ -168,20 +186,37 @@ fn benchmark_gpu_2(c: &mut Criterion) {
                 usage: BufferUsages::STORAGE | BufferUsages::COPY_SRC,
                 mapped_at_creation: false,
             });
-            let f = || {
-                pollster::block_on(execute_gpu_inner_2(
-                    &device,
-                    &queue,
-                    &staging_buffer,
-                    &x_buffer,
-                    &tmp_buffer,
-                    &output_buffer,
-                ));
-            };
 
-            group.bench_with_input(BenchmarkId::new("GPU implementation", xlen), &(), |b, _| {
-                b.iter(f)
-            });
+            macro_rules! generate_kernel_benches {
+                ($($kernel_name:ident),*) => {
+                    $(
+                        let kernel = $kernel_name::new();
+                        let f = || {
+                            pollster::block_on(execute_gpu_inner_2(
+                                &device,
+                                &queue,
+                                &kernel,
+                                &staging_buffer,
+                                &x_buffer,
+                                &tmp_buffer,
+                                &output_buffer,
+                            ));
+                        };
+            
+                        let benchmark_id = format!("My own GPU implementation with Kernel {}", kernel.name());
+            
+                        group.bench_with_input(
+                            BenchmarkId::new(&benchmark_id, xlen),
+                            &(),
+                            |b, _| {
+                                b.iter(f);
+                            },
+                        );
+                    )*
+                };
+            }
+            
+            generate_kernel_benches!(BlockSumReduce1, BlockSumReduce2, BlockSumReduce3, BlockSumReduce4, BlockSumReduce5, BlockSumReduce6, BlockSumReduce7);
         }
 
         // implementation using burn
@@ -197,16 +232,16 @@ fn benchmark_gpu_2(c: &mut Criterion) {
     group.finish();
 }
 
-async fn execute_gpu_inner_2(
+async fn execute_gpu_inner_2<K: Kernel1D>(
     device: &Device,
     queue: &Queue,
+    kernel: &K,
     staging_buffer: &Buffer,
     x_buffer: &Buffer,
     tmp_buffer: &Buffer,
     output_buffer: &Buffer,
 ) -> f32 {
-    let kernel = BlockSumReduce1::new();
-    let sum_reduce = SumReduce::from_kernel(device, x_buffer, tmp_buffer, output_buffer, &kernel);
+    let sum_reduce = SumReduce::from_kernel(device, x_buffer, tmp_buffer, output_buffer, kernel);
     let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor { label: None });
 
     let mut cpass = encoder.begin_compute_pass(&ComputePassDescriptor {
