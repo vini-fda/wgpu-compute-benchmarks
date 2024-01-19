@@ -1,9 +1,9 @@
-use std::borrow::Borrow;
+
 
 use burn::backend::Wgpu;
 use burn::tensor::Tensor;
 use criterion::{
-    black_box, criterion_group, criterion_main, AxisScale, BenchmarkId, Criterion,
+    criterion_group, criterion_main, AxisScale, BenchmarkId, Criterion,
     PlotConfiguration,
 };
 use wgpu::util::DeviceExt;
